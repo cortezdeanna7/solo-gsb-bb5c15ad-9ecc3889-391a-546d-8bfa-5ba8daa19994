@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Literal
 
@@ -82,6 +83,46 @@ class FragmentOut(BaseModel):
 class DigestResponse(BaseModel):
     cuts: list[EnzymeCuts]
     fragments: list[FragmentOut]
+
+
+MAX_PARTIAL_SEQUENCE_LENGTH = 2000
+
+
+class PartialEnzymeRule(EnzymeRule):
+    """An enzyme rule with a per-site cut probability."""
+
+    p: float = Field(examples=[0.5])
+
+    @field_validator("p")
+    @classmethod
+    def p_must_be_a_probability(cls, value: float) -> float:
+        # Hand-rolled (rather than ge/le) because JSON NaN/Infinity
+        # literals parse to non-finite floats that make the standard
+        # constraint error body non-serialisable (HTTP 500).
+        if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+            raise ValueError("p must be a finite number in [0, 1]")
+        return value
+
+
+class PartialDigestRequest(DigestRequest):
+    """/partial-digest input: like /digest, with a per-enzyme cut
+    probability and a sequence of at most 2000 bp."""
+
+    sequence: str = Field(min_length=1, max_length=MAX_PARTIAL_SEQUENCE_LENGTH)
+    enzymes: list[PartialEnzymeRule] = Field(default_factory=list)
+
+
+class FragmentExpectation(BaseModel):
+    """Expected number of fragments of one length (counts may be fractional)."""
+
+    length: int
+    count: float
+
+
+class PartialDigestResponse(BaseModel):
+    # Ascending fragment length; same lengths are summed; zeros omitted.
+    expected_fragments: list[FragmentExpectation]
+    no_cut_probability: float
 
 
 class PanelSampleIn(BaseModel):

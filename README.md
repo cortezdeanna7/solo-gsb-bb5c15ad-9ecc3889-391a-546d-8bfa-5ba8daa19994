@@ -1,6 +1,6 @@
 # DNA Restriction Digest Simulator
 
-基于 Python + FastAPI 的 DNA 限制性内切酶平切模拟服务。接收 ACGT 序列、线性/环状标记和酶规则，搜索识别串及其反向互补串（保留重叠匹配），合并所有切点同时切割，返回各酶切点与酶切片段。亦可为多个 DNA 样本设计最小酶组合（电泳面板），使任意两个样本的条带图谱都可区分。
+基于 Python + FastAPI 的 DNA 限制性内切酶平切模拟服务。接收 ACGT 序列、线性/环状标记和酶规则，搜索识别串及其反向互补串（保留重叠匹配），合并所有切点同时切割，返回各酶切点与酶切片段。亦可为多个 DNA 样本设计最小酶组合（电泳面板），使任意两个样本的条带图谱都可区分。`/partial-digest` 在上述匹配/去重规则之上，为每种酶增加独立切开概率 p，精确计算片段长度的期望数量分布与整条分子无切口概率。
 
 ## 启动
 
@@ -24,6 +24,7 @@ docker compose up --build
 - 交互式文档（Swagger UI）： `http://localhost:8000/docs`
 - 健康检查： `GET http://localhost:8000/health` → `{"status": "ok"}`
 - 酶切模拟： `POST http://localhost:8000/digest`
+- 概率酶切模拟： `POST http://localhost:8000/partial-digest`
 - 酶面板设计： `POST http://localhost:8000/design-panel`
 
 ## 接口说明
@@ -100,6 +101,59 @@ curl -s -X POST http://localhost:8000/digest \
   ]
 }
 ```
+
+### `POST /partial-digest`
+
+概率酶切：每种酶在自己的**每个**切点处以概率 `p`（0～1）独立切开；同一位置被多种酶命中时，任一种切开即形成切口。服务**精确计算**（解析概率乘积，不采样、不枚举切口子集），以有效切点数 K 计，分布计算时间不超过 O(K²)。
+
+请求体（与 `/digest` 相同，另加 `p`，序列最长 **2000 bp**）：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `sequence` | string | DNA 序列，仅含 A/C/G/T，长度 1～2000（超长返回 422） |
+| `topology` | string | `"linear"`（默认）或 `"circular"` |
+| `enzymes` | array | 酶规则列表，每条含 `name`（唯一）、`site`、`cut_offset` 以及 `p`（0～1，越界返回 422）；空列表视为不切 |
+
+规则要点：
+
+- 切点匹配、反向互补、重叠保留、同酶同点去重、环状切点取模等规则与 `/digest` 完全一致。
+- 各酶在各位置的切开事件相互独立；同一物理位置的多酶切开概率合并为 `1 − Π(1 − p)`。
+- **线性分子两端（坐标 0 与 n）不是随机切口**；只有内部坐标可以形成切口。
+- `p = 0` 的酶不参与切割；`p = 1` 时结果即确定性酶切，可与 `/digest` 互验。
+- 返回按长度升序的**片段期望数量**（同长度累加，计数可为小数；零值省略）以及**整条分子无切口概率**。
+- 环状分子：无切口和恰有一个切口都产生一个全长片段（期望相加），但 `no_cut_probability` 只计无切口情形。
+
+示例（环状，p = 0.3）：
+
+```bash
+curl -s -X POST http://localhost:8000/partial-digest \
+  -H 'Content-Type: application/json' \
+  -d '{
+        "sequence": "GAATTCGAATTC",
+        "topology": "circular",
+        "enzymes": [
+          {"name": "EcoRI", "site": "GAATTC", "cut_offset": 1, "p": 0.3}
+        ]
+      }'
+```
+
+响应：
+
+```json
+{
+  "expected_fragments": [
+    {"length": 2,  "count": 0.18},
+    {"length": 4,  "count": 0.18},
+    {"length": 6,  "count": 0.252},
+    {"length": 8,  "count": 0.0882},
+    {"length": 10, "count": 0.0882},
+    {"length": 12, "count": 0.6517}
+  ],
+  "no_cut_probability": 0.2401
+}
+```
+
+其中无切口概率 = 0.7⁴ = 0.2401；全长（12 bp）期望 0.6517 = 无切口 0.2401 + 恰有一个切口 4 × 0.3 × 0.7³ = 0.4116。
 
 ### `POST /design-panel`
 
@@ -181,12 +235,13 @@ python3 -m pytest tests/ -q
 
 ```
 app/
-  main.py      # FastAPI 应用与路由（/health、/digest、/design-panel）
-  digest.py    # 核心酶切逻辑：IUPAC 匹配、切点计算、片段生成
+  main.py      # FastAPI 应用与路由（/health、/digest、/partial-digest、/design-panel）
+  digest.py    # 核心酶切逻辑：IUPAC 匹配、切点计算、片段生成、概率酶切期望分布（O(K²)）
   panel.py     # 面板设计：单酶切条带、可区分性判定、最小酶组选择
-  schemas.py   # 请求/响应模型与校验
+  schemas.py   # 请求/响应模型与校验（含 /partial-digest 的 p 与 2000 bp 限制）
 tests/
   test_digest.py
+  test_partial_digest.py
   test_panel.py
 Dockerfile
 docker-compose.yml
