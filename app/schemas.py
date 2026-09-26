@@ -68,6 +68,35 @@ class DigestRequest(BaseModel):
         return self
 
 
+class PartialEnzymeRule(EnzymeRule):
+    """Enzyme rule plus the probability p (0..1) of cutting at each site."""
+
+    p: float = Field(ge=0.0, le=1.0, examples=[0.5])
+
+
+class PartialDigestRequest(DigestRequest):
+    """Partial-digest input: sequence (<= 2000 bp), topology and enzymes
+    each carrying a cut probability p.  Inherits the /digest validations
+    (ACGT sequence, unique enzyme names, site not longer than sequence)."""
+
+    sequence: str = Field(
+        min_length=1, max_length=2000, examples=["ACGTGAATTCGGGAATTCAA"]
+    )
+    enzymes: list[PartialEnzymeRule] = Field(default_factory=list)
+
+
+class PartialFragmentExpectation(BaseModel):
+    """Expected number of fragments of one length (zero entries omitted)."""
+
+    length: int
+    expected_count: float
+
+
+class PartialDigestResponse(BaseModel):
+    fragments: list[PartialFragmentExpectation]
+    no_cut_probability: float
+
+
 class EnzymeCuts(BaseModel):
     name: str
     cuts: list[int]
